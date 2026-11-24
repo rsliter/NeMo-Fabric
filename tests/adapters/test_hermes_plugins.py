@@ -439,11 +439,13 @@ def test_directory_scans_only_complete_immediate_plugin_folders(tmp_path: Path):
         (child / name).symlink_to(outside / name)
 
     settings = {"plugins": {"external": {"enabled_directory": "extensions"}}}
-    mounted = hermes_plugins.plan_mounted(settings, tmp_path)
+    authored = _config(settings)
+    mounted, effective = hermes_plugins.plan_for_start(authored, tmp_path)
     assert [plugin.name for plugin in mounted] == ["generated"]
-    effective = hermes_plugins.settings_for_mounted(settings, mounted)
-    assert hermes_plugins.native_section(effective) == {"enabled": ["generated"]}
-    assert "entries" not in settings["plugins"]["external"]
+    assert hermes_plugins.native_section(effective.harness.settings) == {
+        "enabled": ["generated"]
+    }
+    assert "entries" not in authored.harness.settings["plugins"]["external"]
 
 
 @pytest.mark.parametrize(
@@ -472,10 +474,10 @@ def test_directory_respects_an_explicit_disable_and_overlapping_path(tmp_path: P
         "entries": {"generated": {"enabled": False, "config": {"mode": "test"}}},
     }
     settings = {"plugins": {"external": external}}
-    mounted = hermes_plugins.plan_mounted(settings, tmp_path)
+    authored = _config(settings)
+    mounted, effective = hermes_plugins.plan_for_start(authored, tmp_path)
     assert [p.path for p in mounted] == [plugin.resolve()]
-    effective = hermes_plugins.settings_for_mounted(settings, mounted)
-    assert hermes_plugins.native_section(effective) == {
+    assert hermes_plugins.native_section(effective.harness.settings) == {
         "disabled": ["generated"],
         "entries": {"generated": {"settings": {"mode": "test"}}},
     }

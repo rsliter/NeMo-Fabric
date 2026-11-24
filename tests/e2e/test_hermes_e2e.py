@@ -34,11 +34,42 @@ from nemo_fabric import (
     RelayAtofConfig,
     RelayAtofFileSinkConfig,
     RelayObservabilityConfig,
+    Runtime,
     SkillConfig,
     SkillDirectory,
 )
 
 pytestmark = pytest.mark.usefixtures("requires_hermes_agent")
+
+
+def _write_file_call(path: Path, content: str) -> dict:
+    return {"name": "write_file", "arguments": {"path": str(path), "content": content}}
+
+
+def _script_tool_calls(api_server: str, calls: list[dict]) -> None:
+    requests.post(
+        f"{api_server}/_scenario", json={"tool_calls": calls}, timeout=5
+    ).raise_for_status()
+
+
+async def _write_plugin_with_hermes(
+    runtime: Runtime, api_server: str, folder: Path, prompt: str
+) -> None:
+    fixture = (
+        Path(__file__).resolve().parents[1] / "fixtures/hermes_plugins/hermes-mounted"
+    )
+    files = ("plugin.yaml", "__init__.py")
+    _script_tool_calls(
+        api_server,
+        [
+            _write_file_call(folder / name, (fixture / name).read_text())
+            for name in files
+        ],
+    )
+    result = await runtime.invoke(input=prompt)
+    assert result["status"] == "succeeded", result.to_mapping()
+    for name in files:
+        assert (folder / name).read_text() == (fixture / name).read_text()
 
 
 @pytest.mark.usefixtures("mock_nvidia_api_key")
@@ -67,22 +98,7 @@ async def test_agent_created_plugin_loads_on_restart(
     )
     root = code_review_agent_dir / "extensions"
     root.mkdir()
-    fixture = (
-        Path(__file__).resolve().parents[1] / "fixtures/hermes_plugins/hermes-mounted"
-    )
-    folder = root / "created-during-run"
     first_prompt = f"Write the plugin files for run {uuid4().hex}."
-
-    def write(path: Path, content: str):
-        return {
-            "name": "write_file",
-            "arguments": {"path": str(path), "content": content},
-        }
-
-    def next_calls(calls):
-        requests.post(
-            f"{api_server}/_scenario", json={"tool_calls": calls}, timeout=5
-        ).raise_for_status()
 
     async with await Fabric().start_runtime(
         config, base_dir=code_review_agent_dir
@@ -91,17 +107,9 @@ async def test_agent_created_plugin_loads_on_restart(
         reference = first.session_ref
         if resume:
             assert reference is not None
-        next_calls(
-            [
-                write(folder / name, (fixture / name).read_text())
-                for name in ("plugin.yaml", "__init__.py")
-            ]
+        await _write_plugin_with_hermes(
+            first, api_server, root / "created-during-run", first_prompt
         )
-        created = await first.invoke(input=first_prompt)
-        assert created["status"] == "succeeded", created.to_mapping()
-        assert (folder / "__init__.py").read_text() == (
-            fixture / "__init__.py"
-        ).read_text()
 
     trigger = root / "hermes-mounted-trigger.txt"
     requests.post(f"{api_server}/_reset", timeout=5).raise_for_status()
@@ -111,11 +119,12 @@ async def test_agent_created_plugin_loads_on_restart(
         session_ref=reference if resume else None,
     ) as second:
         assert second.runtime_id != first_id
-        next_calls(
+        _script_tool_calls(
+            api_server,
             [
-                write(trigger, "after restart"),
+                _write_file_call(trigger, "after restart"),
                 {"name": "hermes_mounted", "arguments": {"word": "restarted"}},
-            ]
+            ],
         )
         result = await second.invoke(
             input="Write the trigger file and call the mounted tool if available."

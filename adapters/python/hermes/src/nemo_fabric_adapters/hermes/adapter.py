@@ -20,7 +20,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from contextlib import AbstractContextManager, redirect_stdout
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -318,21 +318,10 @@ class HermesRuntime:
 
             # Check plugins.external before anything starts; link them into the
             # home before any Hermes discovery reads it.
-            mounted_plugins = plugins.plan_mounted(
-                self._settings, common_utils.base_dir(payload)
+            mounted_plugins, agent_config = plugins.plan_for_start(
+                agent_config, common_utils.base_dir(payload)
             )
-            effective_settings = plugins.settings_for_mounted(
-                self._settings, mounted_plugins
-            )
-            if (
-                effective_settings is not self._settings
-                and agent_config.harness is not None
-            ):
-                agent_config = replace(
-                    agent_config,
-                    harness=replace(agent_config.harness, settings=effective_settings),
-                )
-                self._settings = effective_settings
+            self._settings = configuration._settings(agent_config)
             # Owned before staging, so stop removes them after a cancelled start.
             self._mounted_plugin_links = []
             await _run_to_completion(

@@ -30,9 +30,11 @@ import logging
 import os
 from collections.abc import Iterable
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+
+from nemo_fabric_adapter_contract.models import AgentConfig
 
 import nemo_fabric_adapters.common.plugins as common_plugins
 import nemo_fabric_adapters.common.utils as common_utils
@@ -342,6 +344,7 @@ class MountedPlugin:
     field: str
     name: str
     path: Path
+    enabled_by_default: bool = False
 
 
 def _manifest_path(folder: Path) -> Path | None:
@@ -446,24 +449,26 @@ def _directory_children(
     return plugins
 
 
-def settings_for_mounted(
-    settings: dict[str, Any], mounted: Iterable[MountedPlugin]
-) -> dict[str, Any]:
-    """Apply directory defaults for this start, preserving explicit per-plugin settings."""
-    discovered = [
-        plugin.name for plugin in mounted if plugin.field == ENABLED_DIRECTORY
-    ]
-    if not discovered:
-        return settings
-    authored = _authored(settings)
+def plan_for_start(
+    config: AgentConfig, base_dir: str | Path
+) -> tuple[list[MountedPlugin], AgentConfig]:
+    """Return the folders to stage and the configuration Hermes will use for this start."""
+    if config.harness is None:
+        return [], config
+
+    settings = config.harness.settings
+    mounted = plan_mounted(settings, base_dir)
+    directory_plugins = [plugin for plugin in mounted if plugin.enabled_by_default]
+    if not directory_plugins:
+        return mounted, config
+
     external = _section(settings, "external")
     entries = dict(external.get("entries", {}))
-    for name in discovered:
-        entries[name] = {"enabled": True, **entries.get(name, {})}
-    return {
-        **settings,
-        "plugins": {**authored, "external": {**external, "entries": entries}},
-    }
+    for plugin in directory_plugins:
+        entries[plugin.name] = {"enabled": True, **entries.get(plugin.name, {})}
+    plugins = {**_authored(settings), "external": {**external, "entries": entries}}
+    harness = replace(config.harness, settings={**settings, "plugins": plugins})
+    return mounted, replace(config, harness=harness)
 
 
 def plan_mounted(
@@ -479,14 +484,15 @@ def plan_mounted(
     """
 
     sources = [
-        (f"{PLUGINS_FIELD}.external.paths[{index}]", Path(entry))
+        (Path(entry), f"{PLUGINS_FIELD}.external.paths[{index}]", False)
         for index, entry in enumerate(external_paths(settings))
     ]
     sources.extend(
-        (ENABLED_DIRECTORY, child) for child in _directory_children(settings, base_dir)
+        (child, ENABLED_DIRECTORY, True)
+        for child in _directory_children(settings, base_dir)
     )
     names: dict[str, MountedPlugin] = {}
-    for field, entry in sources:
+    for entry, field, from_directory in sources:
         resolved = common_plugins.resolve_plugin_path(
             entry, base_dir, harness=HARNESS, label=LABEL, field=field
         )
@@ -499,9 +505,14 @@ def plan_mounted(
                 f"Hermes plugin path {str(path)!r} is not a folder",
                 metadata={"field": field, "path": str(path), "reason": "not_a_folder"},
             )
-        plugin = MountedPlugin(field, _manifest_name(path, field), resolved)
+        plugin = MountedPlugin(
+            field,
+            _manifest_name(path, field),
+            resolved,
+            enabled_by_default=from_directory,
+        )
         earlier = names.get(plugin.name)
-        if earlier and not (field == ENABLED_DIRECTORY and earlier.path == resolved):
+        if earlier and not (from_directory and earlier.path == resolved):
             raise LifecycleError(
                 "hermes_plugin_duplicate",
                 f"Hermes plugin {plugin.name!r} is in {earlier.field} and {field}",
