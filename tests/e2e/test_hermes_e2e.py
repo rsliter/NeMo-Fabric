@@ -11,6 +11,7 @@ import warnings
 from importlib.metadata import version as distribution_version
 from pathlib import Path
 from types import ModuleType
+from uuid import uuid4
 
 from packaging.version import Version
 import pytest
@@ -41,6 +42,7 @@ pytestmark = pytest.mark.usefixtures("requires_hermes_agent")
 
 
 @pytest.mark.usefixtures("mock_nvidia_api_key")
+@pytest.mark.parametrize("resume", [False, True], ids=["fresh", "cold-resume"])
 @pytest.mark.parametrize(
     "allowed_toolsets", [None, ["file"]], ids=["default", "file-only"]
 )
@@ -48,10 +50,11 @@ async def test_agent_created_plugin_loads_on_restart(
     code_review_agent_dir: Path,
     api_server: str,
     allowed_toolsets: list[str] | None,
-    monkeypatch: pytest.MonkeyPatch,
+    resume: bool,
 ):
-    monkeypatch.setenv("ADAPTER_PYTHON", sys.executable)
+    os.environ["ADAPTER_PYTHON"] = sys.executable
     config = hermes_config()
+    config.runtime.keep_state = resume
     config.models["default"].model = "fabric-echo"
     config.models["default"].base_url = f"{api_server}/v1"
     config.tools.enabled = allowed_toolsets
@@ -68,6 +71,7 @@ async def test_agent_created_plugin_loads_on_restart(
         Path(__file__).resolve().parents[1] / "fixtures/hermes_plugins/hermes-mounted"
     )
     folder = root / "created-during-run"
+    first_prompt = f"Write the plugin files for run {uuid4().hex}."
 
     def write(path: Path, content: str):
         return {
@@ -83,22 +87,30 @@ async def test_agent_created_plugin_loads_on_restart(
     async with await Fabric().start_runtime(
         config, base_dir=code_review_agent_dir
     ) as first:
+        first_id = first.runtime_id
+        reference = first.session_ref
+        if resume:
+            assert reference is not None
         next_calls(
             [
                 write(folder / name, (fixture / name).read_text())
                 for name in ("plugin.yaml", "__init__.py")
             ]
         )
-        created = await first.invoke(input="Write the plugin files.")
+        created = await first.invoke(input=first_prompt)
         assert created["status"] == "succeeded", created.to_mapping()
         assert (folder / "__init__.py").read_text() == (
             fixture / "__init__.py"
         ).read_text()
 
     trigger = root / "hermes-mounted-trigger.txt"
+    requests.post(f"{api_server}/_reset", timeout=5).raise_for_status()
     async with await Fabric().start_runtime(
-        config, base_dir=code_review_agent_dir
+        config,
+        base_dir=code_review_agent_dir,
+        session_ref=reference if resume else None,
     ) as second:
+        assert second.runtime_id != first_id
         next_calls(
             [
                 write(trigger, "after restart"),
@@ -108,14 +120,23 @@ async def test_agent_created_plugin_loads_on_restart(
         result = await second.invoke(
             input="Write the trigger file and call the mounted tool if available."
         )
+        if resume:
+            assert second.session_ref == reference
+            assert second.recovery_warnings == ()
 
     assert result["status"] == "succeeded", result.to_mapping()
     assert trigger.with_suffix(".observed").read_text() == "after restart"
     captured = requests.get(f"{api_server}/_requests", timeout=5)
     captured.raise_for_status()
+    second_requests = captured.json()
+    prior_turn_restored = any(
+        message["role"] == "user" and first_prompt in str(message["content"])
+        for message in second_requests[-1]["messages"]
+    )
+    assert prior_turn_restored == resume
     advertised = {
         tool["function"]["name"]
-        for request in captured.json()
+        for request in second_requests
         for tool in request.get("tools", [])
     }
     assert ("hermes_mounted" in advertised) == (allowed_toolsets is None)

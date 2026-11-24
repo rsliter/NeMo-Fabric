@@ -220,6 +220,8 @@ harness:
 
 For example, set `external.enabled_directory` to `/sandbox/workspace/extensions`. The agent can write a plugin under `extensions/my-plugin/` and restart with the same settings to load it. Trust every writer to that directory to execute Python in the Hermes runtime. A loaded plugin can register hooks. The deployment’s tool selection controls which tools the model can call.
 
+To resume the same conversation with the plugin available, enable `runtime.keep_state` before the first start. Keep both the Hermes state and the plugin directory available to the next runtime, and pass the saved `session_ref` to `Fabric.start_runtime`.
+
 After Hermes discovers its plugins, startup fails unless every entry with `enabled: true` loaded. Each error names the setting in `metadata.field`:
 
 | Error | When |
