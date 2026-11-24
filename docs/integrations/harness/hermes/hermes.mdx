@@ -213,9 +213,12 @@ harness:
 ```
 
 - **`bundled.entries`:** Plugins that ship with Hermes, keyed by registry key or manifest name. `enabled: false` turns off a plugin Hermes loads by default.
-- **`external`:** Plugin folders that something else provides, such as a mounted volume. The adapter links each folder into `$HERMES_HOME/plugins` at start and removes the link at stop. A folder's Python dependencies must already be importable. A path alone doesn't turn a plugin on.
+- **`external`:** Plugin folders that something else provides, such as a mounted volume. The adapter links each folder into `$HERMES_HOME/plugins` at start and removes the link at stop. A folder's Python dependencies must already be importable. Enable individual `external.paths` plugins by manifest name.
+- **`external.enabled_directory`** opts one existing directory into loading code. It may be empty when the runtime starts. On each start the adapter enables immediate plugin folders containing a `plugin.yaml` or `plugin.yml` and an `__init__.py`. It skips hidden folders and symlinked folders, manifests, and entry points. Use `entries.<manifest-name>.enabled: false` to disable a plugin.
 - **Entries:** Each takes `enabled`, `config` (written to `plugins.entries.<id>.settings`), and `capabilities` (written to `plugins.entries.<id>.granted_capabilities`). A plugin id may appear in only one section.
 - **Hermes controls:** `load_timeout_seconds`, `hook_callback_timeout`, `clone_timeout_seconds`, `auto_update_check_hours`, `auto_apply`, `isolation`, and `host.launcher` are written as they are.
+
+For example, set `external.enabled_directory` to `/sandbox/workspace/extensions`. The agent can write a plugin under `extensions/my-plugin/` and restart with the same settings to load it. Trust every writer to that directory to execute Python in the Hermes runtime. A loaded plugin can register hooks. The deployment’s tool selection controls which tools the model can call.
 
 After Hermes discovers its plugins, startup fails unless every entry with `enabled: true` loaded. Each error names the setting in `metadata.field`:
 

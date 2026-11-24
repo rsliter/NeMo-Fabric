@@ -40,6 +40,95 @@ from nemo_fabric import (
 pytestmark = pytest.mark.usefixtures("requires_hermes_agent")
 
 
+@pytest.mark.usefixtures("mock_nvidia_api_key")
+@pytest.mark.parametrize(
+    "allowed_toolsets", [None, ["file"]], ids=["default", "file-only"]
+)
+async def test_agent_created_plugin_loads_on_restart(
+    code_review_agent_dir: Path,
+    api_server: str,
+    allowed_toolsets: list[str] | None,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("ADAPTER_PYTHON", sys.executable)
+    config = hermes_config()
+    config.models["default"].model = "fabric-echo"
+    config.models["default"].base_url = f"{api_server}/v1"
+    config.tools.enabled = allowed_toolsets
+    config.skills = None
+    config.harness.settings.update(
+        {
+            "plugins": {"external": {"enabled_directory": "extensions"}},
+            "tools": {"tool_search": {"enabled": False}},
+        }
+    )
+    root = code_review_agent_dir / "extensions"
+    root.mkdir()
+    fixture = (
+        Path(__file__).resolve().parents[1] / "fixtures/hermes_plugins/hermes-mounted"
+    )
+    folder = root / "created-during-run"
+
+    def write(path: Path, content: str):
+        return {
+            "name": "write_file",
+            "arguments": {"path": str(path), "content": content},
+        }
+
+    def next_calls(calls):
+        requests.post(
+            f"{api_server}/_scenario", json={"tool_calls": calls}, timeout=5
+        ).raise_for_status()
+
+    async with await Fabric().start_runtime(
+        config, base_dir=code_review_agent_dir
+    ) as first:
+        next_calls(
+            [
+                write(folder / name, (fixture / name).read_text())
+                for name in ("plugin.yaml", "__init__.py")
+            ]
+        )
+        created = await first.invoke(input="Write the plugin files.")
+        assert created["status"] == "succeeded", created.to_mapping()
+        assert (folder / "__init__.py").read_text() == (
+            fixture / "__init__.py"
+        ).read_text()
+
+    trigger = root / "hermes-mounted-trigger.txt"
+    async with await Fabric().start_runtime(
+        config, base_dir=code_review_agent_dir
+    ) as second:
+        next_calls(
+            [
+                write(trigger, "after restart"),
+                {"name": "hermes_mounted", "arguments": {"word": "restarted"}},
+            ]
+        )
+        result = await second.invoke(
+            input="Write the trigger file and call the mounted tool if available."
+        )
+
+    assert result["status"] == "succeeded", result.to_mapping()
+    assert trigger.with_suffix(".observed").read_text() == "after restart"
+    captured = requests.get(f"{api_server}/_requests", timeout=5)
+    captured.raise_for_status()
+    advertised = {
+        tool["function"]["name"]
+        for request in captured.json()
+        for tool in request.get("tools", [])
+    }
+    assert ("hermes_mounted" in advertised) == (allowed_toolsets is None)
+    tool_results = [
+        str(m["content"])
+        for m in result["output"]["messages"]
+        if m.get("role") == "tool"
+    ]
+    assert any("HERMES-MOUNTED-OK:restarted" in text for text in tool_results) == (
+        allowed_toolsets is None
+    )
+
+
 @pytest.mark.usefixtures("mock_nvidia_api_key", "nemo_relay")
 async def test_hermes_persistent_host_reuses_native_session(
     code_review_agent_dir: Path,

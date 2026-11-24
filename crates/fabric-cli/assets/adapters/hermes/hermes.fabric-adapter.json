@@ -69,6 +69,11 @@
           "external": {
             "type": "object",
             "properties": {
+              "enabled_directory": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Trusted directory whose immediate plugin folders are enabled at each runtime start. It must exist but may be empty. Relative paths resolve against the NeMo Fabric base directory. Writers can supply Python code that runs as the agent. Explicitly disabled plugins stay disabled. Tool selection still applies."
+              },
               "paths": {
                 "type": "array",
                 "items": {
@@ -86,7 +91,7 @@
                 "additionalProperties": {
                   "$ref": "#/$defs/pluginEntry"
                 },
-                "description": "Plugins from those folders, keyed by manifest name. A path alone doesn't enable a plugin; with enabled set to true, start fails unless Hermes loads it."
+                "description": "Plugins from those folders, keyed by manifest name. Listing an individual folder in paths does not enable its plugin; with enabled set to true, start fails unless Hermes loads it."
               }
             },
             "additionalProperties": false,

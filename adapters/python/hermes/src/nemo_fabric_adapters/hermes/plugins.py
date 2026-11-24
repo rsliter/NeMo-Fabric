@@ -44,6 +44,7 @@ SETTINGS_FIELD = "harness.settings"
 PLUGINS_FIELD = f"{SETTINGS_FIELD}.plugins"
 HARNESS = "hermes"
 LABEL = "Hermes"
+ENABLED_DIRECTORY = f"{PLUGINS_FIELD}.external.enabled_directory"
 MANIFEST_FILES = ("plugin.yaml", "plugin.yml")
 SECTIONS = ("bundled", "external")
 # Hermes's own plugin controls, written to ``plugins`` as they are.
@@ -336,15 +337,17 @@ def check_no_agent_installs(hermes_home: Path) -> None:
 
 @dataclass(frozen=True)
 class MountedPlugin:
-    """One ``plugins.external.paths`` entry: the plugin's manifest name and its folder."""
+    """A plugin folder and the setting that selected it."""
 
-    index: int
+    field: str
     name: str
     path: Path
 
-    @property
-    def field(self) -> str:
-        return f"{PLUGINS_FIELD}.external.paths[{self.index}]"
+
+def _manifest_path(folder: Path) -> Path | None:
+    return next(
+        (path for name in MANIFEST_FILES if (path := folder / name).is_file()), None
+    )
 
 
 def _manifest_name(folder: Path, field: str) -> str:
@@ -355,9 +358,7 @@ def _manifest_name(folder: Path, field: str) -> str:
     # a Hermes install doesn't ship.
     import hermes_yaml as yaml
 
-    manifest = next(
-        (folder / name for name in MANIFEST_FILES if (folder / name).is_file()), None
-    )
+    manifest = _manifest_path(folder)
     if manifest is None:
         raise LifecycleError(
             "hermes_plugin_invalid",
@@ -407,10 +408,68 @@ def _manifest_name(folder: Path, field: str) -> str:
     return name
 
 
+def _directory_children(
+    settings: Mapping[str, Any], base_dir: str | Path
+) -> list[Path]:
+    directory = _section(settings, "external").get("enabled_directory")
+    if directory is None:
+        return []
+    root = common_plugins.resolve_plugin_path(
+        directory, base_dir, harness=HARNESS, label=LABEL, field=ENABLED_DIRECTORY
+    )
+    try:
+        children = sorted(root.iterdir())
+    except OSError as error:
+        raise LifecycleError(
+            "hermes_plugin_invalid",
+            f"Cannot list Hermes plugin directory {str(root)!r}: {error}",
+            metadata={"field": ENABLED_DIRECTORY, "path": str(root)},
+        ) from error
+
+    plugins = []
+    for child in children:
+        if (
+            child.name.startswith((".", "__"))
+            or child.is_symlink()
+            or not child.is_dir()
+        ):
+            continue
+        entrypoint = child / "__init__.py"
+        manifest = _manifest_path(child)
+        if (
+            manifest
+            and not manifest.is_symlink()
+            and entrypoint.is_file()
+            and not entrypoint.is_symlink()
+        ):
+            plugins.append(child)
+    return plugins
+
+
+def settings_for_mounted(
+    settings: dict[str, Any], mounted: Iterable[MountedPlugin]
+) -> dict[str, Any]:
+    """Apply directory defaults for this start, preserving explicit per-plugin settings."""
+    discovered = [
+        plugin.name for plugin in mounted if plugin.field == ENABLED_DIRECTORY
+    ]
+    if not discovered:
+        return settings
+    authored = _authored(settings)
+    external = _section(settings, "external")
+    entries = dict(external.get("entries", {}))
+    for name in discovered:
+        entries[name] = {"enabled": True, **entries.get(name, {})}
+    return {
+        **settings,
+        "plugins": {**authored, "external": {**external, "entries": entries}},
+    }
+
+
 def plan_mounted(
     settings: Mapping[str, Any], base_dir: str | Path
 ) -> list[MountedPlugin]:
-    """Check ``plugins.external.paths`` and read each plugin's name.
+    """Resolve individual paths and the immediate plugins in the opted-in directory.
 
     A relative entry resolves against ``base_dir``. Fails with
     ``hermes_plugin_not_found`` for a missing folder or an ``external`` entry
@@ -419,14 +478,19 @@ def plan_mounted(
     a name.
     """
 
-    mounted: list[MountedPlugin] = []
+    sources = [
+        (f"{PLUGINS_FIELD}.external.paths[{index}]", Path(entry))
+        for index, entry in enumerate(external_paths(settings))
+    ]
+    sources.extend(
+        (ENABLED_DIRECTORY, child) for child in _directory_children(settings, base_dir)
+    )
     names: dict[str, MountedPlugin] = {}
-    for index, entry in enumerate(external_paths(settings)):
-        field = f"{PLUGINS_FIELD}.external.paths[{index}]"
+    for field, entry in sources:
         resolved = common_plugins.resolve_plugin_path(
             entry, base_dir, harness=HARNESS, label=LABEL, field=field
         )
-        path = Path(entry).expanduser()
+        path = entry.expanduser()
         if not path.is_absolute():
             path = Path(base_dir) / path
         if not resolved.is_dir():
@@ -435,8 +499,9 @@ def plan_mounted(
                 f"Hermes plugin path {str(path)!r} is not a folder",
                 metadata={"field": field, "path": str(path), "reason": "not_a_folder"},
             )
-        plugin = MountedPlugin(index, _manifest_name(path, field), resolved)
-        if (earlier := names.get(plugin.name)) is not None:
+        plugin = MountedPlugin(field, _manifest_name(path, field), resolved)
+        earlier = names.get(plugin.name)
+        if earlier and not (field == ENABLED_DIRECTORY and earlier.path == resolved):
             raise LifecycleError(
                 "hermes_plugin_duplicate",
                 f"Hermes plugin {plugin.name!r} is in {earlier.field} and {field}",
@@ -447,16 +512,15 @@ def plan_mounted(
                 },
             )
         names[plugin.name] = plugin
-        mounted.append(plugin)
     for plugin in plugin_entries(settings):
         if plugin.section == "external" and plugin.plugin not in names:
             raise LifecycleError(
                 common_plugins.not_found_code(HARNESS),
                 f"Hermes plugin {plugin.plugin!r} is not in any "
-                "plugins.external.paths folder",
+                "configured external plugin folder",
                 metadata={"field": plugin.field, "plugin": plugin.plugin},
             )
-    return mounted
+    return list(names.values())
 
 
 LINKS_RECORD = ".nemo-fabric-plugin-links.json"

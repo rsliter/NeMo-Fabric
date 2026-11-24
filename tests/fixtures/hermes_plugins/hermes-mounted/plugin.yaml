@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 name: hermes-mounted
 version: 1.0.0
-description: "Mounted test plugin with one tool and no Python dependencies"
+description: "Mounted test plugin with one tool, one hook and no Python dependencies"
 provides_tools:
   - hermes_mounted
+provides_hooks:
+  - post_tool_call

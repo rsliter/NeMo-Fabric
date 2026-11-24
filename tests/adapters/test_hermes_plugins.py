@@ -423,6 +423,80 @@ def _plugin_folder(parent: Path, folder: str, name: str | None = None) -> Path:
     return path
 
 
+def test_directory_scans_only_complete_immediate_plugin_folders(tmp_path: Path):
+    root = tmp_path / "extensions"
+    selected = _plugin_folder(root, "later", "generated")
+    (selected / "plugin.yaml").rename(selected / "plugin.yml")
+    _plugin_folder(root, ".staging")
+    _plugin_folder(root / "nested", "ignored")
+    partial = _plugin_folder(root, "partial")
+    (partial / "__init__.py").unlink()
+    outside = _plugin_folder(tmp_path, "outside")
+    (root / "linked").symlink_to(outside, target_is_directory=True)
+    for name in ("plugin.yaml", "__init__.py"):
+        child = _plugin_folder(root, f"linked-{name}")
+        (child / name).unlink()
+        (child / name).symlink_to(outside / name)
+
+    settings = {"plugins": {"external": {"enabled_directory": "extensions"}}}
+    mounted = hermes_plugins.plan_mounted(settings, tmp_path)
+    assert [plugin.name for plugin in mounted] == ["generated"]
+    effective = hermes_plugins.settings_for_mounted(settings, mounted)
+    assert hermes_plugins.native_section(effective) == {"enabled": ["generated"]}
+    assert "entries" not in settings["plugins"]["external"]
+
+
+@pytest.mark.parametrize(
+    "is_file, code",
+    [(False, "hermes_plugin_not_found"), (True, "hermes_plugin_invalid")],
+)
+def test_enabled_directory_must_be_an_existing_directory(tmp_path: Path, is_file, code):
+    if is_file:
+        (tmp_path / "mount").touch()
+    with pytest.raises(LifecycleError) as error:
+        hermes_plugins.plan_mounted(
+            {"plugins": {"external": {"enabled_directory": "mount"}}}, tmp_path
+        )
+    assert error.value.code == code
+    assert (
+        error.value.metadata["field"]
+        == "harness.settings.plugins.external.enabled_directory"
+    )
+
+
+def test_directory_respects_an_explicit_disable_and_overlapping_path(tmp_path: Path):
+    plugin = _plugin_folder(tmp_path / "mount", "on-disk", "generated")
+    external = {
+        "enabled_directory": "mount",
+        "paths": [str(plugin)],
+        "entries": {"generated": {"enabled": False, "config": {"mode": "test"}}},
+    }
+    settings = {"plugins": {"external": external}}
+    mounted = hermes_plugins.plan_mounted(settings, tmp_path)
+    assert [p.path for p in mounted] == [plugin.resolve()]
+    effective = hermes_plugins.settings_for_mounted(settings, mounted)
+    assert hermes_plugins.native_section(effective) == {
+        "disabled": ["generated"],
+        "entries": {"generated": {"settings": {"mode": "test"}}},
+    }
+
+
+def test_duplicate_manifest_names_in_enabled_directory_fail_start_planning(
+    tmp_path: Path,
+):
+    for folder in ("one", "two"):
+        _plugin_folder(tmp_path / "mount", folder, "same")
+    with pytest.raises(LifecycleError) as error:
+        hermes_plugins.plan_mounted(
+            {"plugins": {"external": {"enabled_directory": "mount"}}}, tmp_path
+        )
+    assert error.value.code == "hermes_plugin_duplicate"
+    assert (
+        error.value.metadata["field"]
+        == "harness.settings.plugins.external.enabled_directory"
+    )
+
+
 def test_plan_mounted_reads_manifest_names_and_resolves_relative_paths(
     tmp_path: Path,
 ):
@@ -433,9 +507,13 @@ def test_plan_mounted_reads_manifest_names_and_resolves_relative_paths(
         _external(["mount/one", str(unnamed)]), tmp_path
     )
 
-    assert [(plugin.index, plugin.name, plugin.path) for plugin in mounted] == [
-        (0, "first-plugin", (tmp_path / "mount" / "one").resolve()),
-        (1, "unnamed", unnamed.resolve()),
+    assert [(plugin.field, plugin.name, plugin.path) for plugin in mounted] == [
+        (
+            "harness.settings.plugins.external.paths[0]",
+            "first-plugin",
+            (tmp_path / "mount" / "one").resolve(),
+        ),
+        ("harness.settings.plugins.external.paths[1]", "unnamed", unnamed.resolve()),
     ]
 
 

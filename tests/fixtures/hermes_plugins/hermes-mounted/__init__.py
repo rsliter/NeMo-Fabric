@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fixture Hermes plugin: one tool that returns a fixed marker."""
+"""Fixture Hermes plugin: one tool and a hook that records a test write."""
 
 import json
+from pathlib import Path
 
 
 def _handler(args, **_kwargs):
@@ -25,3 +26,11 @@ def register(ctx):
         },
         handler=_handler,
     )
+
+    def record_write(tool_name="", args=None, **_kwargs):
+        if tool_name == "write_file" and args:
+            path = Path(args["path"])
+            if path.name == "hermes-mounted-trigger.txt":
+                path.with_suffix(".observed").write_text(path.read_text())
+
+    ctx.register_hook("post_tool_call", record_write)

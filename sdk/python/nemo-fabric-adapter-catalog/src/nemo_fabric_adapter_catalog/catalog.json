@@ -1109,11 +1109,16 @@
                   "additionalProperties": false,
                   "description": "Plugins with user-prepared code and dependencies.",
                   "properties": {
+                    "enabled_directory": {
+                      "description": "Trusted directory whose immediate plugin folders are enabled at each runtime start. It must exist but may be empty. Relative paths resolve against the NeMo Fabric base directory. Writers can supply Python code that runs as the agent. Explicitly disabled plugins stay disabled. Tool selection still applies.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
                     "entries": {
                       "additionalProperties": {
                         "$ref": "#/$defs/pluginEntry"
                       },
-                      "description": "Plugins from those folders, keyed by manifest name. A path alone doesn't enable a plugin; with enabled set to true, start fails unless Hermes loads it.",
+                      "description": "Plugins from those folders, keyed by manifest name. Listing an individual folder in paths does not enable its plugin; with enabled set to true, start fails unless Hermes loads it.",
                       "propertyNames": {
                         "minLength": 1
                       },
@@ -1323,7 +1328,7 @@
         "name": "nemo-fabric-adapters-hermes",
         "version": "0.8.0"
       },
-      "sha256": "3873209d1c07c9047400f5eaeba7dd974f0ec398c55cd3cd5321239fe25fc776",
+      "sha256": "259ccb138a069cacebf7e264f9f987da7490e8fb8171ad13a254c1ab3cf3bdf2",
       "source": "adapters/python/hermes/hermes.fabric-adapter.json"
     },
     "nvidia.fabric.kilo": {
